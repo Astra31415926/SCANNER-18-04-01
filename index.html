@@ -1,96 +1,574 @@
-Техническое задание: Обновление системы обработки изображения (QR / орнамент)
-🎯 Цель
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SCI Advanced Processor</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        :root {
+            --ui-bg: rgba(15, 15, 15, 0.92);
+            --accent: #00ffcc;
+            --text: #ddd;
+            --border: #333;
+        }
 
-Добавить инструменты для точной настройки извлечения данных из изображения (в частности — QR-кода в синем канале), включая:
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            color: var(--text);
+            touch-action: none;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
 
-загрузку статичных изображений (RAW/DNG),
-бинаризацию,
-гамма-коррекцию,
-подготовку под LUT (пресеты красок).
-1. 📂 Модуль загрузки изображения
-Функционал:
-Добавить кнопку: «Загрузить файл»
-Реализовать <input type="file">
-Поддержка форматов:
-.jpg
-.png
-.dng (если возможно; иначе предусмотреть расширяемость)
-Логика:
-При загрузке файла:
-изображение заменяет видеопоток с камеры
-обработка применяется к загруженному изображению
-Возможность вернуться обратно к камере (опционально)
-2. ⚫ Бинаризация (Thresholding)
-UI:
-Чекбокс: «Включить бинаризацию»
-Слайдер: «Порог (0–255)»
-отображается только если бинаризация включена
-Логика:
-if (gray > threshold) {
-    output = 255;
-} else {
-    output = 0;
-}
-Требования:
-Применяется после перевода изображения в grayscale
-Должна работать в реальном времени (если используется камера)
-Должна применяться к статичному изображению
-3. 🌗 Гамма-коррекция (Gamma)
-UI:
-Слайдер: «Гамма»
-диапазон: 0.1 – 3.0
-значение по умолчанию: 1.0
-Логика:
-corrected = 255 * Math.pow((value / 255), gamma);
-Требования:
-Применяется до бинаризации
-Должна улучшать читаемость текстуры (особенно для акрила)
-Работает независимо от бинаризации (может быть включена всегда)
-4. 🎨 LUT (Look-Up Table)
-UI:
-Выпадающий список: «LUT / Пресет красок»
-Примеры пресетов:
-Default
-Acrylic
-Oil
-High Contrast
-Custom
-Логика:
-LUT применяется к RGB каналам до всех остальных операций
-Возможность легко добавить новые LUT
-outputColor = LUT[inputColor];
-5. 🔁 Порядок обработки (Pipeline)
+        /* Область отрисовки */
+        #viewport {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            background: #000;
+            overflow: hidden;
+        }
 
-Обработка изображения должна идти строго в следующем порядке:
+        #canvas, #video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain; /* Вписываем изображение целиком */
+        }
+        #video { display: none; }
+        #overlay-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+        }
 
-1. Загрузка изображения / кадра
-2. Применение LUT
-3. Извлечение каналов (особенно синий)
-4. Перевод в grayscale (если требуется)
-5. Гамма-коррекция
-6. Бинаризация (если включена)
-7. Отображение результата
-6. 🧠 Дополнительные требования
-Производительность:
-Обработка в реальном времени (для камеры)
-Без заметных лагов
-Расширяемость:
-Возможность добавления:
-новых LUT
-новых фильтров
-алгоритмов декуплизации (k1, k2)
-UX:
-Интуитивный интерфейс
-Все контролы должны быть реактивными (live update)
-7. 💡 Ключевая идея (контекст для модели)
+        /* Панель управления */
+        .control-dock {
+            position: relative;
+            z-index: 10;
+            background: var(--ui-bg);
+            backdrop-filter: blur(15px);
+            border-top: 1px solid var(--border);
+            padding: 10px 15px 20px 15px;
+            max-height: 45vh;
+            overflow-y: auto;
+        }
 
-Система используется для:
+        /* Шапка с режимами */
+        .mode-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 8px;
+        }
 
-извлечения скрытых данных (QR) из изображений,
-где информация закодирована в синем канале,
-а красный и зелёный содержат визуальный орнамент.
+        .mode-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+        }
 
-Поэтому:
-👉 критично сохранить и правильно обрабатывать канал B
-👉 минимизировать межканальный шум
-👉 дать пользователю точную настройку (gamma + threshold + LUT)
+        .mode-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-sm {
+            background: transparent;
+            border: 1px solid #555;
+            color: #ccc;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .btn-sm.active { border-color: var(--accent); color: var(--accent); }
+
+        /* Группы контролов */
+        .control-group {
+            margin-bottom: 12px;
+        }
+        .group-label {
+            font-size: 11px;
+            color: #777;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        /* Слайдеры и Селекты */
+        select {
+            width: 100%;
+            background: #222;
+            color: white;
+            border: 1px solid #444;
+            padding: 5px;
+            border-radius: 4px;
+        }
+
+        input[type=range] {
+            width: 100%;
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: var(--accent);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .slider-val {
+            float: right;
+            font-size: 10px;
+            color: var(--accent);
+            margin-top: -2px;
+        }
+
+        /* Лог */
+        .log-panel {
+            margin-top: 10px;
+            padding: 8px;
+            background: rgba(0,0,0,0.4);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--accent);
+            min-height: 24px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        /* Спрятанный инпут для файлов */
+        #file-input { display: none; }
+
+        /* Адаптивная сетка для кнопок каналов */
+        .channel-grid {
+            display: flex;
+            gap: 5px;
+        }
+        .channel-grid button {
+            flex: 1;
+            padding: 6px;
+            background: #222;
+            border: 1px solid #333;
+            color: #888;
+            cursor: pointer;
+        }
+        .channel-grid button.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(0, 255, 204, 0.1);
+        }
+
+    </style>
+</head>
+<body>
+
+<!-- Область просмотра -->
+<div id="viewport">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+    <canvas id="overlay-canvas"></canvas>
+    <input type="file" id="file-input" accept="image/*">
+</div>
+
+<!-- Панель управления -->
+<div class="control-dock">
+    
+    <!-- 1. Режим источника -->
+    <div class="mode-header">
+        <span class="mode-title" id="mode-indicator">Режим: Камера</span>
+        <div class="mode-actions">
+            <button class="btn-sm" onclick="document.getElementById('file-input').click()">📂 Загрузить</button>
+            <button class="btn-sm active" id="btn-cam" onclick="switchSource('camera')">Камера</button>
+        </div>
+    </div>
+
+    <!-- 2. LUT и Каналы -->
+    <div class="control-group">
+        <label class="group-label">LUT / Пресет красок</label>
+        <select id="lut-select" onchange="updateUI()">
+            <option value="default">Default (Необработанный)</option>
+            <option value="acrylic">Acrylic (Плотный пигмент)</option>
+            <option value="oil">Oil (Высокий контраст)</option>
+            <option value="high_contrast">High Contrast (Инверсия)</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <label class="group-label">Цветовой канал (SCI)</label>
+        <div class="channel-grid">
+            <button class="active" data-ch="R" onclick="selectChannel('R')">Red</button>
+            <button data-ch="G" onclick="selectChannel('G')">Green</button>
+            <button class="active" data-ch="B" onclick="selectChannel('B')">Blue</button> <!-- По умолчанию часто нужен B -->
+        </div>
+    </div>
+
+    <!-- Динамические слайдеры SCI (генерируются JS) -->
+    <div id="sci-sliders"></div>
+
+    <!-- 3. Обработка (Pipeline) -->
+    <div class="control-group">
+        <label class="group-label">Гамма-коррекция <span class="slider-val" id="v-gamma">1.0</span></label>
+        <input type="range" min="0.1" max="3.0" step="0.1" value="1.0" id="slider-gamma" 
+               oninput="state.gamma=parseFloat(this.value); document.getElementById('v-gamma').innerText=this.value">
+    </div>
+
+    <div class="control-group">
+        <label class="group-label">
+            <input type="checkbox" id="check-bin" onchange="state.binarize=this.checked; updateUI()">
+            Бинаризация (Threshold)
+        </label>
+        <input type="range" min="0" max="255" value="128" id="slider-thresh" 
+               oninput="state.threshold=parseFloat(this.value)" disabled>
+    </div>
+
+    <!-- Лог -->
+    <div class="log-panel" id="log-panel">
+        Ожидание данных...
+    </div>
+</div>
+
+<script>
+    // === СОСТОЯНИЕ И КОНФИГ ===
+    const state = {
+        mode: 'camera', // 'camera' or 'image'
+        channel: 'B',   // Целевой канал для QR
+        gamma: 1.0,
+        binarize: false,
+        threshold: 128,
+        lut: 'default',
+        // Коэффициенты SCI
+        params: {
+            R: { offset: 0, gain: 1.0, subG: 0.0, subB: 0.0 },
+            G: { offset: 0, gain: 1.0, subR: 0.0, subB: 0.0 },
+            B: { offset: 0, gain: 1.0, subR: 0.0, subG: 0.0 }
+        }
+    };
+
+    // === LUT ENGINE ===
+    const LUTs = {
+        default: (r, g, b) => [r, g, b],
+        // Акрил: Усиление насыщенности и контраста
+        acrylic: (r, g, b) => {
+            const contrast = 1.4;
+            const factor = (259 * (contrast * 255 + 255)) / (255 * (259 - contrast * 255));
+            return [
+                Math.min(255, Math.max(0, factor * (r - 128) + 128)),
+                Math.min(255, Math.max(0, factor * (g - 128) + 128)),
+                Math.min(255, Math.max(0, factor * (b - 128) + 128))
+            ];
+        },
+        // Масло: Упрощение тонов
+        oil: (r, g, b) => {
+            return [
+                Math.floor(r / 32) * 32,
+                Math.floor(g / 32) * 32,
+                Math.floor(b / 32) * 32
+            ];
+        },
+        // Высокий контраст: S-кривая
+        high_contrast: (r, g, b) => {
+            // Простая имитация кривой
+            const f = (v) => {
+                if (v < 50) return v * 0.5;
+                if (v > 205) return 255 - (255 - v) * 0.5;
+                return 128 + (v - 128) * 1.5;
+            };
+            return [f(r), f(g), f(b)].map(v => Math.min(255, Math.max(0, v)));
+        }
+    };
+
+    // === DOM ELEMENTS ===
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const overlay = document.getElementById('overlay-canvas');
+    const overlayCtx = overlay.getContext('2d');
+    const logPanel = document.getElementById('log-panel');
+    const fileInput = document.getElementById('file-input');
+
+    let staticImage = null;
+    let animationId = null;
+
+    // === ИНИЦИАЛИЗАЦИЯ ===
+    async function initCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                resizeCanvas(video.videoWidth, video.videoHeight);
+                startProcessing();
+            };
+        } catch (e) {
+            logPanel.innerText = "Ошибка камеры: " + e.message;
+            logPanel.style.color = "red";
+        }
+    }
+
+    function resizeCanvas(w, h) {
+        canvas.width = w;
+        canvas.height = h;
+        overlay.width = w;
+        overlay.height = h;
+    }
+
+    // === ОБРАБОТКА ИЗОБРАЖЕНИЙ ===
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            const img = new Image();
+            img.onload = () => {
+                staticImage = img;
+                state.mode = 'image';
+                document.getElementById('mode-indicator').innerText = "Режим: Изображение";
+                document.getElementById('btn-cam').classList.remove('active');
+                
+                // Останавливаем видео-петлю
+                if (animationId) cancelAnimationFrame(animationId);
+                
+                resizeCanvas(img.width, img.height);
+                processStaticImage();
+            };
+            img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    function switchSource(mode) {
+        if (mode === 'camera' && state.mode !== 'camera') {
+            state.mode = 'camera';
+            staticImage = null;
+            document.getElementById('mode-indicator').innerText = "Режим: Камера";
+            document.getElementById('btn-cam').classList.add('active');
+            startProcessing();
+        }
+    }
+
+    // === PIPELINE ENGINE ===
+    
+    function processStaticImage() {
+        if (!staticImage) return;
+        
+        // 1. Отрисовка сырца
+        ctx.drawImage(staticImage, 0, 0, canvas.width, canvas.height);
+        
+        // 2. Обработка
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        applyPipeline(imgData.data);
+        ctx.putImageData(imgData, 0, 0);
+        
+        // 3. QR
+        scanQR(imgData);
+    }
+
+    function processVideoFrame() {
+        if (state.mode !== 'camera') return;
+
+        // 1. Отрисовка сырца
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // 2. Обработка
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        applyPipeline(imgData.data);
+        ctx.putImageData(imgData, 0, 0);
+        
+        // 3. QR
+        scanQR(imgData);
+
+        animationId = requestAnimationFrame(processVideoFrame);
+    }
+
+    function startProcessing() {
+        if (animationId) cancelAnimationFrame(animationId);
+        processVideoFrame();
+    }
+
+    // ГЛАВНАЯ ФУНКЦИЯ МАТЕМАТИКИ
+    function applyPipeline(data) {
+        const p = state.params[state.channel];
+        const lutFunc = LUTs[state.lut];
+        const gamma = state.gamma;
+        const thresh = state.threshold;
+        const doBin = state.binarize;
+
+        // Соседние каналы для текущего
+        let n1Key, n2Key, n1Val, n2Val;
+        if (state.channel === 'R') { n1Key = 'subG'; n2Key = 'subB'; }
+        else if (state.channel === 'G') { n1Key = 'subR'; n2Key = 'subB'; }
+        else { n1Key = 'subR'; n2Key = 'subG'; }
+
+        for (let i = 0; i < data.length; i += 4) {
+            // 1. LUT (RGB Manipulation)
+            let [r, g, b] = lutFunc(data[i], data[i+1], data[i+2]);
+
+            // 2. Channel Extraction (SCI)
+            // Val = Base - Offset - (Neighbor1 * k1 + Neighbor2 * k2)
+            let val = 0;
+            if (state.channel === 'R') {
+                val = r - p.offset - (g * p[n1Key] + b * p[n2Key]);
+            } else if (state.channel === 'G') {
+                val = g - p.offset - (r * p[n1Key] + b * p[n2Key]);
+            } else {
+                val = b - p.offset - (r * p[n1Key] + g * p[n2Key]);
+            }
+
+            // Apply Gain
+            val *= p.gain;
+
+            // Clamp 0-255
+            val = Math.max(0, Math.min(255, val));
+
+            // 3. Gamma Correction
+            // corrected = 255 * Math.pow((value / 255), gamma);
+            val = 255 * Math.pow(val / 255, gamma);
+
+            // 4. Binarization
+            if (doBin) {
+                val = val > thresh ? 255 : 0;
+            }
+
+            // Output Grayscale
+            data[i] = val;
+            data[i+1] = val;
+            data[i+2] = val;
+        }
+    }
+
+    // === QR SCANNER ===
+    let lastQr = null;
+    let audioCtx = null;
+
+    function playBeep() {
+        if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.frequency.value = 1000; osc.type = "square"; g.gain.value = 0.05;
+        osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+    }
+
+    function scanQR(imgData) {
+        overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+        const code = jsQR(imgData.data, canvas.width, canvas.height, { inversionAttempts: "dontInvert" });
+        
+        if (code) {
+            // Draw box
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(code.location.topLeftCorner.x, code.location.topLeftCorner.y);
+            overlayCtx.lineTo(code.location.topRightCorner.x, code.location.topRightCorner.y);
+            overlayCtx.lineTo(code.location.bottomRightCorner.x, code.location.bottomRightCorner.y);
+            overlayCtx.lineTo(code.location.bottomLeftCorner.x, code.location.bottomLeftCorner.y);
+            overlayCtx.closePath();
+            overlayCtx.lineWidth = 3;
+            overlayCtx.strokeStyle = '#00ffcc';
+            overlayCtx.stroke();
+
+            if (code.data !== lastQr) {
+                lastQr = code.data;
+                logPanel.innerText = code.data;
+                playBeep();
+            }
+        } else {
+            lastQr = null;
+        }
+    }
+
+    // === UI HELPERS ===
+    
+    // Обновление слайдеров SCI при смене канала
+    function updateSlidersSCI() {
+        const p = state.params[state.channel];
+        const chName = state.channel;
+        
+        // Имена соседей
+        let n1Name, n2Name, n1Key, n2Key;
+        if (chName === 'R') { n1Name="Зеленый"; n2Name="Синий"; n1Key="subG"; n2Key="subB"; }
+        else if (chName === 'G') { n1Name="Красный"; n2Name="Синий"; n1Key="subR"; n2Key="subB"; }
+        else { n1Name="Красный"; n2Name="Зеленый"; n1Key="subR"; n2Key="subG"; }
+
+        document.getElementById('sci-sliders').innerHTML = `
+            <div class="control-group">
+                <label class="group-label">Смещение (Offset) <span class="slider-val">${p.offset}</span></label>
+                <input type="range" min="0" max="100" value="${p.offset}" oninput="setParam('offset', this.value)">
+            </div>
+            <div class="control-group">
+                <label class="group-label">Усиление (Gain) <span class="slider-val">${p.gain.toFixed(1)}</span></label>
+                <input type="range" min="0.5" max="4.0" step="0.1" value="${p.gain}" oninput="setParam('gain', this.value)">
+            </div>
+            <div class="control-group">
+                <label class="group-label">Вычесть ${n1Name} (k1) <span class="slider-val">${p[n1Key].toFixed(2)}</span></label>
+                <input type="range" min="0" max="2.0" step="0.01" value="${p[n1Key]}" oninput="setParam('${n1Key}', this.value)">
+            </div>
+            <div class="control-group">
+                <label class="group-label">Вычесть ${n2Name} (k2) <span class="slider-val">${p[n2Key].toFixed(2)}</span></label>
+                <input type="range" min="0" max="2.0" step="0.01" value="${p[n2Key]}" oninput="setParam('${n2Key}', this.value)">
+            </div>
+        `;
+    }
+
+    function setParam(key, val) {
+        state.params[state.channel][key] = parseFloat(val);
+        updateSlidersSCI();
+        
+        // Если мы в режиме изображения, сразу обновляем результат
+        if (state.mode === 'image') processStaticImage();
+    }
+
+    function selectChannel(ch) {
+        state.channel = ch;
+        document.querySelectorAll('.channel-grid button').forEach(b => {
+            b.classList.toggle('active', b.dataset.ch === ch);
+        });
+        updateSlidersSCI();
+        if (state.mode === 'image') processStaticImage();
+    }
+
+    function updateUI() {
+        state.binarize = document.getElementById('check-bin').checked;
+        document.getElementById('slider-thresh').disabled = !state.binarize;
+        state.lut = document.getElementById('lut-select').value;
+        
+        if (state.mode === 'image') processStaticImage();
+    }
+
+    // Events binding
+    document.getElementById('slider-thresh').addEventListener('input', (e) => {
+        state.threshold = e.target.value;
+        if (state.mode === 'image') processStaticImage();
+    });
+
+    // START
+    initCamera();
+    updateSlidersSCI(); // Init UI
+
+</script>
+</body>
+</html>
