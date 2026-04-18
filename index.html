@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SCI Calibrator</title>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <style>
+        :root {
+            --ui-bg: rgba(20, 20, 20, 0.85);
+            --accent: #00ffcc;
+            --text: #eeeeee;
+            --border: #333;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            font-family: sans-serif;
+            overflow: hidden;
+            color: var(--text);
+            touch-action: none; /* Блокируем зум браузера */
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Видео слой */
+        #video {
+            display: none;
+        }
+        #canvas {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            background: #000;
+        }
+        #overlay-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 5;
+        }
+
+        /* Панель управления (низ) */
+        .control-panel {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: var(--ui-bg);
+            backdrop-filter: blur(10px);
+            padding: 15px;
+            box-sizing: border-box;
+            z-index: 10;
+            border-top: 1px solid var(--border);
+            max-height: 50vh;
+            overflow-y: auto;
+        }
+
+        /* Кнопки каналов */
+        .channel-selector {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .btn-channel {
+            background: transparent;
+            border: 2px solid #555;
+            color: #888;
+            font-size: 18px;
+            font-weight: bold;
+            padding: 8px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-channel.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            box-shadow: 0 0 10px rgba(0, 255, 204, 0.3);
+        }
+
+        /* Группа слайдеров */
+        .slider-group {
+            margin-bottom: 12px;
+        }
+        
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 4px;
+            color: #aaa;
+        }
+
+        input[type=range] {
+            width: 100%;
+            background: #333;
+            height: 4px;
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            background: var(--accent);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        /* Лог */
+        .log-box {
+            margin-top: 10px;
+            padding: 8px;
+            background: rgba(0,0,0,0.5);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--accent);
+            min-height: 30px;
+            word-break: break-all;
+        }
+
+        /* Переключатель бинаризации */
+        .toggle-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 10px;
+        }
+        
+        .switch { position: relative; display: inline-block; width: 44px; height: 22px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #444; transition: .3s; border-radius: 22px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(22px); }
+
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="canvas"></canvas>
+    <canvas id="overlay-canvas"></canvas>
+
+    <div class="control-panel">
+        <!-- Выбор канала -->
+        <div class="channel-selector">
+            <button class="btn-channel active" data-ch="R" onclick="selectChannel('R')">R</button>
+            <button class="btn-channel" data-ch="G" onclick="selectChannel('G')">G</button>
+            <button class="btn-channel" data-ch="B" onclick="selectChannel('B')">B</button>
+        </div>
+
+        <!-- Бинаризация -->
+        <div class="toggle-container">
+            <label class="switch">
+                <input type="checkbox" id="binToggle" onchange="updateUI()">
+            </label>
+            <span>Бинаризация</span>
+        </div>
+
+        <!-- Слайдеры калибровки (Динамические) -->
+        <div id="sliders-container">
+            <!-- Заполняется JS -->
+        </div>
+
+        <!-- Лог -->
+        <div class="log-box" id="logBox">Ожидание данных...</div>
+    </div>
+</div>
+
+<script>
+    // === СОСТОЯНИЕ ПРИЛОЖЕНИЯ ===
+    const state = {
+        activeChannel: 'R',
+        binarize: false,
+        threshold: 128,
+        // Матрица коэффициентов для каждого канала
+        params: {
+            R: { offset: 0, gain: 1.5, subG: 0.0, subB: 0.0 },
+            G: { offset: 0, gain: 1.5, subR: 0.0, subB: 0.0 },
+            B: { offset: 0, gain: 1.5, subR: 0.0, subG: 0.0 }
+        }
+    };
+
+    // === DOM ЭЛЕМЕНТЫ ===
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const overlay = document.getElementById('overlay-canvas');
+    const overlayCtx = overlay.getContext('2d');
+    const logBox = document.getElementById('logBox');
+    const slidersContainer = document.getElementById('sliders-container');
+
+    // === ИНИЦИАЛИЗАЦИЯ ===
+    async function init() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+            });
+            video.srcObject = stream;
+            video.onloadedmetadata = () => {
+                video.play();
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                overlay.width = video.videoWidth;
+                overlay.height = video.videoHeight;
+                
+                // Генерируем UI слайдеров первый раз
+                updateSlidersUI();
+                requestAnimationFrame(loop);
+            };
+        } catch (e) {
+            logBox.innerText = "Ошибка камеры: " + e.message;
+            logBox.style.color = "red";
+        }
+    }
+
+    // === UI ЛОГИКА ===
+    
+    // Выбор канала
+    function selectChannel(ch) {
+        state.activeChannel = ch;
+        // Подсветка кнопок
+        document.querySelectorAll('.btn-channel').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.ch === ch);
+        });
+        // Обновляем слайдеры под новый канал
+        updateSlidersUI();
+    }
+
+    // Генерация HTML слайдеров
+    function updateSlidersUI() {
+        const p = state.params[state.activeChannel];
+        const neighbors = getNeighborNames(state.activeChannel);
+        
+        // Блок бинаризации (порог)
+        let binHtml = state.binarize ? `
+            <div class="slider-group">
+                <div class="slider-header"><span>Порог (Threshold)</span><span>${state.threshold}</span></div>
+                <input type="range" min="0" max="255" value="${state.threshold}" oninput="state.threshold=parseFloat(this.value); updateSlidersUI()">
+            </div>
+        ` : '';
+
+        slidersContainer.innerHTML = `
+            <div class="slider-group">
+                <div class="slider-header"><span>Смещение (Offset)</span><span>${p.offset}</span></div>
+                <input type="range" min="0" max="100" value="${p.offset}" oninput="setParam('offset', this.value)">
+            </div>
+            <div class="slider-group">
+                <div class="slider-header"><span>Усиление (Gain)</span><span>${p.gain.toFixed(2)}</span></div>
+                <input type="range" min="0.5" max="5.0" step="0.05" value="${p.gain}" oninput="setParam('gain', this.value)">
+            </div>
+            <div class="slider-group">
+                <div class="slider-header"><span>Вычесть ${neighbors.n1} (k1)</span><span>${p[neighbors.n1Key].toFixed(2)}</span></div>
+                <input type="range" min="0" max="2.0" step="0.01" value="${p[neighbors.n1Key]}" oninput="setParam('${neighbors.n1Key}', this.value)">
+            </div>
+            <div class="slider-group">
+                <div class="slider-header"><span>Вычесть ${neighbors.n2} (k2)</span><span>${p[neighbors.n2Key].toFixed(2)}</span></div>
+                <input type="range" min="0" max="2.0" step="0.01" value="${p[neighbors.n2Key]}" oninput="setParam('${neighbors.n2Key}', this.value)">
+            </div>
+            ${binHtml}
+        `;
+    }
+
+    function updateUI() {
+        state.binarize = document.getElementById('binToggle').checked;
+        updateSlidersUI();
+    }
+
+    // Вспомогательная функция: имена соседних каналов
+    function getNeighborNames(ch) {
+        if (ch === 'R') return { n1: 'Green', n1Key: 'subG', n2: 'Blue', n2Key: 'subB' };
+        if (ch === 'G') return { n1: 'Red', n1Key: 'subR', n2: 'Blue', n2Key: 'subB' };
+        if (ch === 'B') return { n1: 'Red', n1Key: 'subR', n2: 'Green', n2Key: 'subG' };
+    }
+
+    function setParam(key, val) {
+        state.params[state.activeChannel][key] = parseFloat(val);
+        updateSlidersUI(); // Обновляем отображение значения
+    }
+
+    // === МАТЕМАТИЧЕСКАЯ ОБРАБОТКА (SCI ENGINE) ===
+    
+    let lastQr = null;
+    let audioCtx = null;
+
+    function playBeep() {
+        if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.frequency.value = 950; osc.type = "sine"; g.gain.value = 0.1;
+        osc.start(); osc.stop(audioCtx.currentTime + 0.08);
+    }
+
+    function loop() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            // 1. Захват кадра
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const d = img.data;
+            
+            const p = state.params[state.activeChannel];
+            const ch = state.activeChannel;
+            
+            // 2. Обработка пикселей
+            // Формула: (Val - Offset - (Neighbors * k)) * Gain
+            for (let i = 0; i < d.length; i += 4) {
+                let r = d[i], g = d[i+1], b = d[i+2];
+                let val = 0;
+
+                if (ch === 'R') {
+                    val = r - p.offset - (g * p.subG + b * p.subB);
+                } else if (ch === 'G') {
+                    val = g - p.offset - (r * p.subR + b * p.subB);
+                } else {
+                    val = b - p.offset - (r * p.subR + g * p.subG);
+                }
+
+                val *= p.gain;
+
+                // Ограничение (Clamping)
+                if (val < 0) val = 0;
+                if (val > 255) val = 255;
+
+                // Бинаризация
+                if (state.binarize) {
+                    val = (val > state.threshold) ? 255 : 0;
+                }
+
+                // Запись результата (Grayscale)
+                d[i] = val;
+                d[i+1] = val;
+                d[i+2] = val;
+            }
+
+            // 3. Вывод на экран
+            ctx.putImageData(img, 0, 0);
+
+            // 4. QR Сканирование
+            const code = jsQR(d, canvas.width, canvas.height);
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            
+            if (code) {
+                drawRect(code.location);
+                if (code.data !== lastQr) {
+                    lastQr = code.data;
+                    logBox.innerText = code.data;
+                    playBeep();
+                }
+            } else {
+                lastQr = null; // Сброс, чтобы при повторном наведении сработал сигнал
+            }
+        }
+        requestAnimationFrame(loop);
+    }
+
+    function drawRect(loc) {
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(loc.topLeftCorner.x, loc.topLeftCorner.y);
+        overlayCtx.lineTo(loc.topRightCorner.x, loc.topRightCorner.y);
+        overlayCtx.lineTo(loc.bottomRightCorner.x, loc.bottomRightCorner.y);
+        overlayCtx.lineTo(loc.bottomLeftCorner.x, loc.bottomLeftCorner.y);
+        overlayCtx.closePath();
+        overlayCtx.lineWidth = 3;
+        overlayCtx.strokeStyle = '#00ffcc';
+        overlayCtx.stroke();
+    }
+
+    // Старт
+    init();
+
+</script>
+</body>
+</html>
